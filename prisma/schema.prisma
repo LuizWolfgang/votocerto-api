@@ -1,0 +1,934 @@
+// =======================================================
+// PRISMA SCHEMA - Centro de Comando / Inteligência Territorial
+// =======================================================
+// ✅ Regiões: Estado -> Cidade -> Bairro
+// ✅ Multi-campanha
+// ✅ Auditoria / Logs / Financeiro (Reembolso)
+// ✅ Prisma relations 100% válidas (com inversos)
+// =======================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =======================================================
+// ENUMS
+// =======================================================
+
+enum RegionType {
+  ESTADO
+  CIDADE
+  BAIRRO
+}
+
+enum UserRole {
+  CANDIDATO
+  COORDENADOR_GERAL
+  COORDENADOR_REGIONAL
+  LIDER_BAIRRO
+  APOIADOR
+  FINANCEIRO
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  BLOCKED
+  PENDING
+}
+
+enum FunnelLevel {
+  APOIADOR
+  ENGAJADO
+  MILITANTE
+  LIDER
+  COORDENADOR
+}
+
+enum MissionStatus {
+  ACTIVE
+  COMPLETED
+  OVERDUE
+  CANCELLED
+}
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  CONFIRMED
+  FINISHED
+  CANCELLED
+}
+
+enum AlertType {
+  REGIONAL_DROP
+  LEADER_INACTIVE
+  GOAL_DELAYED
+  CONVERSION_DROP
+  LOW_EVENT_CONFIRMATION
+  ACCOUNTABILITY_PENDING
+  BUDGET_EXCEEDED
+  RECEIPT_MISSING
+  REGION_SPENDING_ABOVE_AVG
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum CommunicationChannel {
+  WHATSAPP
+  SMS
+  EMAIL
+  PUSH
+  INTERNAL
+}
+
+enum CommunicationStatus {
+  SCHEDULED
+  SENT
+  FAILED
+  CANCELLED
+}
+
+enum ExpenseType {
+  REEMBOLSO
+  PAGAMENTO_DIRETO
+  ADIANTAMENTO
+}
+
+enum ExpenseStatus {
+  AGUARDANDO
+  APROVADO
+  PAGO
+  REJEITADO
+  AJUSTE_SOLICITADO
+  PRESTACAO_PENDENTE
+}
+
+enum ExpenseCategoryType {
+  GASOLINA
+  ALIMENTACAO
+  EVENTO
+  ESTRUTURA
+  MATERIAL_GRAFICO
+  SOM
+  TRIO_ELETRICO
+  EQUIPE
+  PUBLICIDADE
+  OUTROS
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  APPROVE
+  REJECT
+  REQUEST_ADJUSTMENT
+  EXPORT
+}
+
+// =======================================================
+// MODEL: Campaign (Campanha)
+// =======================================================
+
+model Campaign {
+  id          String    @id @default(uuid())
+  name        String
+  description String?
+  startsAt    DateTime?
+  endsAt      DateTime?
+  isActive    Boolean   @default(true)
+
+  // relations
+  members          CampaignMember[]
+  regions          Region[]
+  hierarchy        HierarchyNode[]
+  supporters       Supporter[]
+  missions         Mission[]
+  events           Event[]
+  eventAttendances EventAttendance[]
+  alerts           Alert[]
+  expenses         Expense[]
+  comms            CommunicationCampaign[]
+  commLogs         CommunicationLog[]
+  engagements      Engagement[]
+  conversions      Conversion[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([createdAt])
+}
+
+// =======================================================
+// MODEL: CampaignMember (Usuário dentro da Campanha)
+// =======================================================
+
+model CampaignMember {
+  id         String   @id @default(uuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  role   UserRole
+  status UserStatus @default(ACTIVE)
+
+  // escopo regional (opcional)
+  regionId String?
+  region   Region? @relation(fields: [regionId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([campaignId, userId])
+  @@index([campaignId])
+  @@index([userId])
+  @@index([regionId])
+  @@index([role])
+  @@index([status])
+}
+
+// =======================================================
+// MODEL: User (Usuário do sistema)
+// =======================================================
+
+model User {
+  id           String     @id @default(uuid())
+  fullName     String
+  email        String     @unique
+  phone        String?    @db.VarChar(20)
+  cpf          String?    @unique @db.VarChar(14)
+  passwordHash String
+  role         UserRole
+  status       UserStatus @default(ACTIVE)
+
+  // membership por campanha
+  memberships CampaignMember[]
+
+  // convites globais (opcional)
+  invitedById String?
+  invitedBy   User?   @relation("UserInvites", fields: [invitedById], references: [id])
+  invitees    User[]  @relation("UserInvites")
+
+  // árvore hierárquica por campanha
+  hierarchyNodes HierarchyNode[] @relation("HierarchyUser")
+
+  // perfil apoiador (caso o user também seja apoiador)
+  supporterProfile Supporter? @relation("SupporterUser")
+
+  // apoiadores indicados por esse user
+  referredSupporters Supporter[] @relation("SupporterReferralUser")
+
+  // missões/eventos
+  ledMissions Mission[] @relation("MissionResponsible")
+  ledEvents   Event[]   @relation("EventResponsible")
+
+  missionsCreated Mission[] @relation("MissionCreatedBy")
+
+  // financeiro
+  financialRequests Expense[]
+  approvals         ExpenseApproval[]
+  expenseChanges    ExpenseStatusHistory[]
+
+  // comunicação
+  commsCreated CommunicationCampaign[]
+  commTargets  CommunicationLog[]      @relation("CommunicationTargetUser")
+
+  // eventos presença (staff / equipe / usuários)
+  eventAttendances EventAttendance[]
+
+  // logs
+  refreshTokens RefreshToken[]
+  accessLogs    AccessLog[]
+  auditLogs     AuditLog[]     @relation("AuditActor")
+
+  // compliance
+  consents ConsentAcceptance[]
+
+  // uploads
+  uploads Attachment[]
+
+  // alertas relacionados
+  relatedAlerts Alert[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([role])
+  @@index([status])
+  @@index([invitedById])
+  @@index([createdAt])
+}
+
+// =======================================================
+// MODEL: RefreshToken (Refresh Tokens)
+// =======================================================
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  ipAddress String?
+  userAgent String?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// =======================================================
+// MODEL: Region (Região - Estado/Cidade/Bairro)
+// =======================================================
+
+model Region {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  name String
+  code String?
+  type RegionType
+
+  parentId String?
+  parent   Region?  @relation("RegionTree", fields: [parentId], references: [id])
+  children Region[] @relation("RegionTree")
+
+  latitude  Decimal? @db.Decimal(10, 7)
+  longitude Decimal? @db.Decimal(10, 7)
+  geoJson   Json?
+
+  // relations
+  members     CampaignMember[]
+  supporters  Supporter[]
+  missions    Mission[]
+  events      Event[]
+  alerts      Alert[]
+  expenses    Expense[]
+  engagements Engagement[]
+  conversions Conversion[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([campaignId, name, parentId])
+  @@index([campaignId])
+  @@index([parentId])
+  @@index([type])
+}
+
+// =======================================================
+// MODEL: HierarchyNode (Árvore de Lideranças)
+// =======================================================
+
+model HierarchyNode {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation("HierarchyUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  parentNodeId String?
+  parentNode   HierarchyNode?  @relation("HierarchyTree", fields: [parentNodeId], references: [id])
+  children     HierarchyNode[] @relation("HierarchyTree")
+
+  level      Int
+  path       String?
+  isBlocked  Boolean @default(false)
+  inviteCode String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([campaignId, userId])
+  @@index([campaignId])
+  @@index([parentNodeId])
+  @@index([level])
+  @@index([path])
+}
+
+// =======================================================
+// MODEL: Supporter (Apoiadores)
+// =======================================================
+
+model Supporter {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  userId String? @unique
+  user   User?   @relation("SupporterUser", fields: [userId], references: [id])
+
+  fullName String
+  phone    String? @db.VarChar(20)
+  email    String?
+  cpf      String? @unique
+
+  regionId String
+  region   Region @relation(fields: [regionId], references: [id])
+
+  currentLevel FunnelLevel @default(APOIADOR)
+  isActive     Boolean     @default(true)
+  engagedScore Int         @default(0)
+
+  referredByUserId String?
+  referredByUser   User?   @relation("SupporterReferralUser", fields: [referredByUserId], references: [id])
+
+  eventsPresence EventAttendance[]
+  engagements    Engagement[]
+  conversions    Conversion[]
+
+  commTargets CommunicationLog[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([campaignId])
+  @@index([regionId])
+  @@index([currentLevel])
+  @@index([referredByUserId])
+  @@index([createdAt])
+}
+
+// =======================================================
+// MODEL: Engagement (Engajamento)
+// =======================================================
+
+model Engagement {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  supporterId String
+  supporter   Supporter @relation(fields: [supporterId], references: [id], onDelete: Cascade)
+
+  regionId String?
+  region   Region? @relation(fields: [regionId], references: [id])
+
+  source     String
+  score      Int      @default(0)
+  metadata   Json?
+  occurredAt DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([campaignId])
+  @@index([supporterId])
+  @@index([regionId])
+  @@index([occurredAt])
+}
+
+// =======================================================
+// MODEL: Conversion (Mudança de nível no funil)
+// =======================================================
+
+model Conversion {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  supporterId String
+  supporter   Supporter @relation(fields: [supporterId], references: [id], onDelete: Cascade)
+
+  fromLevel FunnelLevel
+  toLevel   FunnelLevel
+
+  regionId String?
+  region   Region? @relation(fields: [regionId], references: [id])
+
+  convertedAt DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([campaignId])
+  @@index([supporterId])
+  @@index([regionId])
+  @@index([convertedAt])
+  @@index([fromLevel, toLevel])
+}
+
+// =======================================================
+// MODEL: Mission (Missões e Metas)
+// =======================================================
+
+model Mission {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  title       String
+  description String?
+
+  regionId String
+  region   Region @relation(fields: [regionId], references: [id])
+
+  responsibleId String
+  responsible   User   @relation("MissionResponsible", fields: [responsibleId], references: [id])
+
+  targetNumber    Int
+  currentProgress Int           @default(0)
+  status          MissionStatus @default(ACTIVE)
+
+  startDate   DateTime?
+  dueDate     DateTime
+  completedAt DateTime?
+
+  createdById String?
+  createdBy   User?   @relation("MissionCreatedBy", fields: [createdById], references: [id])
+
+  alerts Alert[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([regionId])
+  @@index([responsibleId])
+  @@index([status])
+  @@index([dueDate])
+}
+
+// =======================================================
+// MODEL: Event (Eventos)
+// =======================================================
+
+model Event {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  title       String
+  description String?
+  status      EventStatus @default(DRAFT)
+
+  regionId String
+  region   Region @relation(fields: [regionId], references: [id])
+
+  locationName String?
+  address      String?
+  latitude     Decimal? @db.Decimal(10, 7)
+  longitude    Decimal? @db.Decimal(10, 7)
+
+  startsAt DateTime
+  endsAt   DateTime?
+
+  responsibleId String
+  responsible   User   @relation("EventResponsible", fields: [responsibleId], references: [id])
+
+  attendees       EventAttendance[]
+  relatedExpenses Expense[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([regionId])
+  @@index([responsibleId])
+  @@index([status])
+  @@index([startsAt])
+}
+
+// =======================================================
+// MODEL: EventAttendance (Confirmação/Presença)
+// =======================================================
+
+model EventAttendance {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  eventId String
+  event   Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  supporterId String?
+  supporter   Supporter? @relation(fields: [supporterId], references: [id])
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
+
+  confirmed   Boolean   @default(false)
+  present     Boolean   @default(false)
+  confirmedAt DateTime?
+  presentAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([eventId, supporterId])
+  @@index([campaignId])
+  @@index([eventId])
+  @@index([supporterId])
+  @@index([userId])
+}
+
+// =======================================================
+// MODEL: CommunicationCampaign (Campanha de Comunicação)
+// =======================================================
+
+model CommunicationCampaign {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  title   String
+  channel CommunicationChannel
+  status  CommunicationStatus  @default(SCHEDULED)
+
+  filterRegionIds  Json?
+  filterRoles      Json?
+  filterRanking    Json?
+  filterEngagement Json?
+
+  content     String
+  scheduledAt DateTime?
+  sentAt      DateTime?
+
+  totalSent      Int @default(0)
+  totalOpened    Int @default(0)
+  totalResponded Int @default(0)
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  logs CommunicationLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([channel])
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+// =======================================================
+// MODEL: CommunicationLog (Log de envio/abertura/resposta)
+// =======================================================
+
+model CommunicationLog {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  campaignCommId String
+  campaignComm   CommunicationCampaign @relation(fields: [campaignCommId], references: [id], onDelete: Cascade)
+
+  targetUserId String?
+  targetUser   User?   @relation("CommunicationTargetUser", fields: [targetUserId], references: [id])
+
+  targetSupporterId String?
+  targetSupporter   Supporter? @relation(fields: [targetSupporterId], references: [id])
+
+  status            String
+  openedAt          DateTime?
+  respondedAt       DateTime?
+  providerMessageId String?
+  metadata          Json?
+  createdAt         DateTime  @default(now())
+
+  @@index([campaignId])
+  @@index([campaignCommId])
+  @@index([targetUserId])
+  @@index([targetSupporterId])
+  @@index([status])
+}
+
+// =======================================================
+// MODEL: Alert (Alertas Automáticos)
+// =======================================================
+
+model Alert {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  type        AlertType
+  severity    AlertSeverity @default(MEDIUM)
+  title       String
+  description String?
+
+  regionId String?
+  region   Region? @relation(fields: [regionId], references: [id])
+
+  relatedUserId String?
+  relatedUser   User?   @relation(fields: [relatedUserId], references: [id])
+
+  relatedMissionId String?
+  relatedMission   Mission? @relation(fields: [relatedMissionId], references: [id])
+
+  isResolved Boolean   @default(false)
+  resolvedAt DateTime?
+  metadata   Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([campaignId])
+  @@index([type])
+  @@index([severity])
+  @@index([regionId])
+  @@index([isResolved])
+  @@index([createdAt])
+}
+
+// =======================================================
+// MODEL: ExpenseCategory (Categorias de Despesa)
+// =======================================================
+
+model ExpenseCategory {
+  id     String              @id @default(uuid())
+  name   String              @unique
+  type   ExpenseCategoryType
+  active Boolean             @default(true)
+
+  expenses Expense[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// =======================================================
+// MODEL: Expense (Despesa / Reembolso / Adiantamento)
+// =======================================================
+
+model Expense {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  requesterId String
+  requester   User   @relation(fields: [requesterId], references: [id])
+
+  regionId String
+  region   Region @relation(fields: [regionId], references: [id])
+
+  eventId String?
+  event   Event?  @relation(fields: [eventId], references: [id])
+
+  categoryId String
+  category   ExpenseCategory @relation(fields: [categoryId], references: [id])
+
+  type   ExpenseType
+  status ExpenseStatus @default(AGUARDANDO)
+
+  amount             Decimal   @db.Decimal(14, 2)
+  estimatedAmount    Decimal?  @db.Decimal(14, 2)
+  expenseDate        DateTime
+  expectedActionDate DateTime?
+
+  description String?
+  motive      String?
+
+  receiptAttachmentId String?
+  receiptAttachment   Attachment? @relation("ExpenseReceiptAttachment", fields: [receiptAttachmentId], references: [id])
+
+  isAccountabilityRequired  Boolean   @default(false)
+  accountabilityDueDate     DateTime?
+  accountabilityDeliveredAt DateTime?
+
+  ipAddress String?
+
+  approvals ExpenseApproval[]
+  history   ExpenseStatusHistory[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([requesterId])
+  @@index([regionId])
+  @@index([eventId])
+  @@index([categoryId])
+  @@index([type])
+  @@index([status])
+  @@index([expenseDate])
+  @@index([createdAt])
+}
+
+// =======================================================
+// MODEL: ExpenseApproval (Aprovação / Rejeição / Ajuste)
+// =======================================================
+
+model ExpenseApproval {
+  id String @id @default(uuid())
+
+  expenseId String
+  expense   Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+
+  approverId String
+  approver   User   @relation(fields: [approverId], references: [id])
+
+  action    String
+  comment   String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([expenseId])
+  @@index([approverId])
+  @@index([createdAt])
+}
+
+// =======================================================
+// MODEL: ExpenseStatusHistory (Histórico de status)
+// =======================================================
+
+model ExpenseStatusHistory {
+  id String @id @default(uuid())
+
+  expenseId String
+  expense   Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+
+  fromStatus ExpenseStatus?
+  toStatus   ExpenseStatus
+
+  changedById String?
+  changedBy   User?   @relation(fields: [changedById], references: [id])
+
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@index([expenseId])
+  @@index([changedById])
+  @@index([createdAt])
+}
+
+// =======================================================
+// MODEL: Attachment (Arquivos / Nota Fiscal)
+// =======================================================
+
+model Attachment {
+  id           String @id @default(uuid())
+  fileName     String
+  originalName String
+  mimeType     String
+  sizeBytes    BigInt
+  storageKey   String @unique
+
+  storageBucket String?
+  url           String?
+  checksum      String?
+
+  uploadedById String?
+  uploadedBy   User?   @relation(fields: [uploadedById], references: [id])
+
+  createdAt DateTime @default(now())
+
+  expenseReceipt Expense[] @relation("ExpenseReceiptAttachment")
+}
+
+// =======================================================
+// MODEL: AccessLog (Logins / Logout / Refresh)
+// =======================================================
+
+model AccessLog {
+  id String @id @default(uuid())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
+
+  action    String
+  ipAddress String?
+  userAgent String?
+  success   Boolean @default(true)
+  metadata  Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// =======================================================
+// MODEL: AuditLog (Auditoria)
+// =======================================================
+
+model AuditLog {
+  id String @id @default(uuid())
+
+  actorId String?
+  actor   User?   @relation("AuditActor", fields: [actorId], references: [id])
+
+  action     AuditAction
+  entity     String
+  entityId   String?
+  beforeData Json?
+  afterData  Json?
+
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  @@index([actorId])
+  @@index([entity, entityId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// =======================================================
+// MODEL: ConsentTerm (Termo LGPD)
+// =======================================================
+
+model ConsentTerm {
+  id       String  @id @default(uuid())
+  version  String  @unique
+  title    String
+  content  String
+  isActive Boolean @default(true)
+
+  acceptances ConsentAcceptance[]
+
+  createdAt DateTime @default(now())
+}
+
+// =======================================================
+// MODEL: ConsentAcceptance (Aceite do termo)
+// =======================================================
+
+model ConsentAcceptance {
+  id String @id @default(uuid())
+
+  termId String
+  term   ConsentTerm @relation(fields: [termId], references: [id])
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  acceptedAt DateTime @default(now())
+  ipAddress  String?
+  userAgent  String?
+
+  @@unique([termId, userId])
+  @@index([userId])
+  @@index([acceptedAt])
+}
